@@ -1,10 +1,12 @@
 import os.path
 import re
+import json, requests
 import tkinter as tk
 import logging
 import tkinter.messagebox
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+import modules.globals as globals
 
 class LoginRegister(tk.Frame):
     """tkinter frame for logging in or registering, and handling the loading of private keys."""
@@ -19,9 +21,9 @@ class LoginRegister(tk.Frame):
 
         title = "Please enter your credentials:"
 
-        greeting = tk.Label(text="SecureBox v0.1", font='Arial 25 bold')
+        greeting = tk.Label(master=self, text="SecureBox v0.1", font='Arial 25 bold')
         greeting.grid(column=0, row=0, columnspan=2)
-        greeting1 = tk.Label(text=title, font='Arial 13')
+        greeting1 = tk.Label(master=self, text=title, font='Arial 13')
         greeting1.grid(column=0, row=1, columnspan=2)
 
         command = self.on_button
@@ -71,15 +73,35 @@ class LoginRegister(tk.Frame):
             self.button["state"] = "active"
             return
 
-        # check for a username in our auth folder
+        # check for a username in our auth folder, if not, try register locally + with server
         if not (os.path.exists(pem_location) and os.path.isfile(pem_location)):
-            logging.log(logging.INFO, "Username " + username + " not found, creating...")
-            # TODO: check username doesn't exist against server
+            logging.getLogger().log(logging.INFO, "Username " + username + " not found, creating...")
+
+            # check if the username exists on the server first
+            response_code = globals.get_server("/isuser/{}".format(username)).status_code
+            if response_code == 200:
+                # duplicate username but no pem; we can't log in.
+                logging.getLogger().log(logging.WARN, "Username " + username + " already present on server!")
+                tk.messagebox.showwarning("Registration Failed",
+                                          "Username already present on server, but no PEM found on this machine.")
+                self.button["state"] = "active"
+                return
+
             # generate a new private key
             private_key = rsa.generate_private_key(
                 public_exponent=65537,
                 key_size=2048,
             )
+
+            # serialize the public key
+            public_key = globals.serialize_public_key(private_key.public_key()).decode("utf-8")
+
+            # add the public key to the server
+            resp = globals.post_server("/adduser", {'username': username, 'key': public_key})
+            if resp.status_code != 201:
+                logging.getLogger().log(logging.WARN, "Server didn't let us register...")
+                self.button["state"] = "active"
+                return
 
             # serialize and store to .pem
             serialized_key = private_key.private_bytes(
@@ -107,6 +129,22 @@ class LoginRegister(tk.Frame):
             return
         except FileNotFoundError:
             tk.messagebox.showwarning("Login Failed", "Missing key file. Did you just delete it? Try restarting.")
+            self.button["state"] = "active"
+            return
+
+        # check the PEM the server has is equal to ours
+        our_public_key = globals.serialize_public_key(private_key.public_key()).decode("utf-8")
+        response = globals.get_server("/isuser/{}".format(username))
+        if response.status_code == 200:
+            response_dict = json.loads(response.text)
+            if our_public_key != response_dict[username]:
+                tk.messagebox.showwarning("Login Failed", "Local PEM found, but it doesn't match server!")
+                logging.getLogger().log(logging.WARN, "Loaded .pem doesn't match server!")
+                self.button["state"] = "active"
+                return
+        else:
+            tk.messagebox.showwarning("Login Failed", "Local PEM found, but no username for it on server.")
+            logging.getLogger().log(logging.WARN, "Loaded .pem but username not on server?")
             self.button["state"] = "active"
             return
 

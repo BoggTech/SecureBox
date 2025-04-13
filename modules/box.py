@@ -27,9 +27,15 @@ class BoxConnection:
                 file_content_stream
             )
 
-    def get_all_files(self):
-        """Returns a list of all filenames in the box"""
-        return self.client.folders.get_folder_items('0').entries
+    def download_file(self, path, file_id):
+        """Dowloads a file with a given ID to path."""
+        byte_stream = self.client.downloads.download_file(file_id)
+        with open(path, 'wb') as downloaded_file_stream:
+            downloaded_file_stream.write(byte_stream.read())
+
+    def get_all_files(self, id='0'):
+        """Returns a list of all filenames in a folder in the box"""
+        return self.client.folders.get_folder_items(id).entries
 
 
 
